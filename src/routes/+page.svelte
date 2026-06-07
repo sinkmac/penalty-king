@@ -1,7 +1,7 @@
 <svelte:options runes={true} />
 
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import Ball from '$lib/Ball.svelte';
 	import Banner from '$lib/Banner.svelte';
 	import GoalFrame from '$lib/GoalFrame.svelte';
@@ -18,22 +18,52 @@
 		muted: boolean;
 		saved: boolean;
 	};
+	type KickRecord = {
+		x: number;
+		y: number;
+		label: string;
+		points: string;
+	};
 
-	const matches = [
-		"Scotland v Germany, 87'",
-		"France v Brazil, 71'",
-		"Argentina v Netherlands, 90+3'",
-		"Italy v Spain, 64'",
-		"Portugal v Croatia, 119'"
+	type Fixture = { date: string; opponent: string; minute: string };
+
+	const fixtures: Fixture[] = [
+		{ date: '2026-06-13', opponent: 'Haiti', minute: "87'" },
+		{ date: '2026-06-19', opponent: 'Morocco', minute: "71'" },
+		{ date: '2026-06-24', opponent: 'Brazil', minute: "90+3'" }
 	];
 
+	const neutralMatch = "Penalty, 87'";
+
+	function todayKey() {
+		const now = new Date();
+		const year = now.getFullYear();
+		const month = String(now.getMonth() + 1).padStart(2, '0');
+		const day = String(now.getDate()).padStart(2, '0');
+		return `${year}-${month}-${day}`;
+	}
+
+	function defaultFixture() {
+		const today = todayKey();
+		return fixtures.find((fixture) => fixture.date === today)
+			?? fixtures.find((fixture) => fixture.date > today)
+			?? null;
+	}
+
+	function formatFixture(fixture: Fixture | null) {
+		return fixture ? `Scotland v ${fixture.opponent}, ${fixture.minute}` : neutralMatch;
+	}
+
 	let gameState = $state<GameState>('idle');
-	let selectedMatch = $state(matches[0]);
+	let selectedFixture = $state<Fixture | null>(defaultFixture());
+	let selectedMatch = $state(neutralMatch);
 	let tapPoint: TapPoint | null = $state(null);
 	let resolution: Resolution | null = $state(null);
 	let progress = $state(1);
 	let flash = $state(false);
-	let round = $state(0);
+	let kicksTaken = $state(0);
+	let kickHistory = $state<KickRecord[]>([]);
+	let sessionOpen = $state(false);
 	let goalEl: HTMLElement | null = $state(null);
 	let goalSize = $state({ width: 340, height: 210 });
 
@@ -59,9 +89,8 @@
 
 	function startRound() {
 		clearTimers();
-		round += 1;
 		gameState = 'trigger';
-		selectedMatch = matches[Math.floor(Math.random() * matches.length)];
+		selectedMatch = formatFixture(selectedFixture);
 		tapPoint = null;
 		resolution = null;
 		progress = 1;
@@ -112,7 +141,8 @@
 			updateGoalSize();
 			tapPoint = { x: goalSize.width / 2, y: goalSize.height * 0.5 };
 		}
-		resolution = makeResolution(tapPoint, goalSize, round);
+		resolution = makeResolution(tapPoint, goalSize, kicksTaken + 1);
+		recordKick(tapPoint, resolution);
 		setTimer(() => {
 			gameState = 'resolution';
 		}, 2000);
@@ -128,6 +158,19 @@
 		if (!goalEl) return;
 		const rect = goalEl.getBoundingClientRect();
 		goalSize = { width: rect.width, height: rect.height };
+	}
+
+	function recordKick(tap: TapPoint, result: Resolution) {
+		kicksTaken += 1;
+		kickHistory = [
+			...kickHistory.slice(-19),
+			{
+				x: tap.x / Math.max(goalSize.width, 1),
+				y: tap.y / Math.max(goalSize.height, 1),
+				label: result.label,
+				points: result.points
+			}
+		];
 	}
 
 	function makeResolution(tap: TapPoint, size: { width: number; height: number }, roundNumber: number): Resolution {
@@ -205,6 +248,11 @@
 		return Math.min(max, Math.max(min, value));
 	}
 
+	onMount(() => {
+		selectedFixture = defaultFixture();
+		selectedMatch = formatFixture(selectedFixture);
+	});
+
 	onDestroy(clearTimers);
 </script>
 
@@ -215,6 +263,28 @@
 <main class="shell" class:playing={gameState !== 'idle'}>
 	<div class="vignette" aria-hidden="true"></div>
 	<div class="flash" class:active={flash} aria-hidden="true"></div>
+
+	{#if kicksTaken > 0}
+		<button class="session-pill font-ui" class:open={sessionOpen} onclick={() => (sessionOpen = !sessionOpen)} aria-expanded={sessionOpen}>
+			{kicksTaken} kick{kicksTaken === 1 ? '' : 's'}
+		</button>
+	{/if}
+
+	{#if sessionOpen}
+		<aside class="session-drawer" aria-label="Session view">
+			<p class="drawer-kicker font-ui">Session view</p>
+			<div class="mini-heatmap" aria-label="Tap heatmap">
+				{#each kickHistory as kick, index}
+					<span
+						class="heat-dot"
+						style={`left:${kick.x * 100}%; top:${kick.y * 100}%; opacity:${0.35 + (index + 1) / Math.max(kickHistory.length, 1) * 0.55};`}
+						title={kick.label}
+					></span>
+				{/each}
+			</div>
+			<p class="drawer-note">Rough tap map. Nothing saved.</p>
+		</aside>
+	{/if}
 
 	<Banner active={gameState === 'trigger'} match={selectedMatch} />
 
@@ -229,7 +299,14 @@
 		{#if gameState === 'idle'}
 			<div class="idle-card">
 				<h1 class="wordmark font-display">Penalty King</h1>
-				<button class="next-button font-ui" onclick={startRound}>Next penalty</button>
+				{#if selectedFixture}
+					<p class="fixture-kicker font-ui">Scotland World Cup</p>
+					<button class="next-button fixture-button font-ui" onclick={startRound}>
+						Scotland v {selectedFixture.opponent}
+					</button>
+				{:else}
+					<button class="next-button font-ui" onclick={startRound}>Next penalty</button>
+				{/if}
 			</div>
 		{:else if isGoalVisible}
 			<div class="play-card">
@@ -362,6 +439,96 @@
 		transform: scale(0.985);
 		background: rgba(201, 169, 97, 0.06);
 		border-color: rgba(201, 169, 97, 0.92);
+	}
+
+	.fixture-kicker {
+		margin: -0.8rem 0 -1.1rem;
+		color: rgba(245, 245, 240, 0.42);
+		font-size: 0.58rem;
+		font-weight: 300;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+	}
+
+	.fixture-button {
+		min-width: min(280px, calc(100vw - 64px));
+	}
+
+	.session-pill {
+		position: fixed;
+		right: max(16px, env(safe-area-inset-right));
+		bottom: max(16px, env(safe-area-inset-bottom));
+		z-index: 22;
+		border: 1px solid rgba(201, 169, 97, 0.28);
+		border-radius: 999px;
+		background: rgba(10, 10, 12, 0.72);
+		color: rgba(245, 245, 240, 0.62);
+		padding: 0.62rem 0.82rem;
+		font-size: 0.62rem;
+		font-weight: 300;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+		backdrop-filter: blur(14px);
+	}
+
+	.session-pill.open {
+		color: #c9a961;
+		border-color: rgba(201, 169, 97, 0.62);
+	}
+
+	.session-drawer {
+		position: fixed;
+		right: max(16px, env(safe-area-inset-right));
+		bottom: calc(max(16px, env(safe-area-inset-bottom)) + 48px);
+		z-index: 21;
+		width: min(232px, calc(100vw - 32px));
+		border: 1px solid rgba(201, 169, 97, 0.24);
+		border-radius: 22px;
+		background: rgba(10, 10, 12, 0.82);
+		padding: 1rem;
+		backdrop-filter: blur(18px);
+		animation: drawerIn 180ms ease-out both;
+	}
+
+	.drawer-kicker {
+		margin: 0 0 0.72rem;
+		color: rgba(201, 169, 97, 0.74);
+		font-size: 0.58rem;
+		font-weight: 300;
+		letter-spacing: 0.18em;
+		text-transform: uppercase;
+	}
+
+	.mini-heatmap {
+		position: relative;
+		height: 118px;
+		border: 1px solid rgba(245, 245, 240, 0.12);
+		border-radius: 14px;
+		background:
+			linear-gradient(rgba(245, 245, 240, 0.06) 1px, transparent 1px),
+			linear-gradient(90deg, rgba(245, 245, 240, 0.06) 1px, transparent 1px),
+			rgba(245, 245, 240, 0.025);
+		background-size: 33.333% 33.333%;
+		overflow: hidden;
+	}
+
+	.heat-dot {
+		position: absolute;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #c9a961;
+		box-shadow: 0 0 16px rgba(201, 169, 97, 0.44);
+		transform: translate(-50%, -50%);
+	}
+
+	.drawer-note {
+		margin: 0.7rem 0 0;
+		color: rgba(245, 245, 240, 0.42);
+		font-family: 'Inter', system-ui, sans-serif;
+		font-size: 0.68rem;
+		font-weight: 300;
+		line-height: 1.45;
 	}
 
 	.play-card {
